@@ -1,0 +1,324 @@
+/**
+ * Configuration loader — config.default.yaml + config.yaml overrides.
+ */
+
+import { readFileSync, existsSync, copyFileSync, mkdirSync, chmodSync } from 'fs';
+import { resolve } from 'path';
+import yaml from 'js-yaml';
+import { z } from 'zod';
+import {
+  configDefaultPath,
+  projectConfigPath,
+  userConfigPath,
+  expandHome,
+  defaultWorkspaceRoot,
+  projectHomeDir,
+  getProjectRoot,
+} from './home.js';
+import type { AppConfig, LogFileSetting } from '../models/types.js';
+
+const RepoEntrySchema = z.object({
+  name: z.string(),
+  path: z.string(),
+  description: z.string().default(''),
+});
+
+export const RawConfigSchema = z.object({
+  cursor: z.object({
+    api_key: z.string().default(''),
+  }).default({ api_key: '' }),
+  repos: z.array(RepoEntrySchema).default([]),
+  workspace_root: z.string().default(''),
+  channels: z.object({
+    telegram: z.object({
+      enabled: z.boolean().default(false),
+      bot_token: z.string().default(''),
+      allowed_user_ids: z.array(z.union([z.number(), z.string()])).default([]),
+    }).default({ enabled: false, bot_token: '', allowed_user_ids: [] }),
+    web: z.object({ enabled: z.boolean().default(true) }).default({ enabled: true }),
+  }).default({
+    telegram: { enabled: false, bot_token: '', allowed_user_ids: [] },
+    web: { enabled: true },
+  }),
+  server: z.object({
+    host: z.string().default('0.0.0.0'),
+    port: z.number().default(8747),
+    ui_token: z.string().default(''),
+    tunnel_token: z.string().default(''),
+    tunnel_hostname: z.string().default(''),
+  }).default({
+    host: '0.0.0.0',
+    port: 8747,
+    ui_token: '',
+    tunnel_token: '',
+    tunnel_hostname: '',
+  }),
+  sdk: z.object({
+    default_model: z.string().default('composer-2.5'),
+    max_sessions: z.number().default(5),
+    question_timeout_ms: z.number().default(3_600_000),
+  }).default({ default_model: 'composer-2.5', max_sessions: 5, question_timeout_ms: 3_600_000 }),
+  machine: z.object({
+    telegram_heartbeat_hours: z.number().default(0),
+    wol_mac: z.string().default(''),
+  }).default({ telegram_heartbeat_hours: 0, wol_mac: '' }),
+  logging: z.object({
+    level: z.string().default('info'),
+    file: z.union([z.string(), z.boolean(), z.null()]).optional(),
+  }).default({ level: 'info' }),
+});
+
+export type RawConfig = z.infer<typeof RawConfigSchema>;
+
+let cachedConfig: AppConfig | null = null;
+
+export function resetConfigCache(): void {
+  cachedConfig = null;
+}
+
+export function getLoadedConfig(): AppConfig | null {
+  return cachedConfig;
+}
+
+export function parseAllowedUserIds(raw: unknown): number[] {
+  if (!Array.isArray(raw)) return [];
+  const ids = new Set<number>();
+  for (const part of raw) {
+    const num = typeof part === 'number' ? part : Number.parseInt(String(part), 10);
+    if (!Number.isNaN(num)) ids.add(num);
+  }
+  return [...ids];
+}
+
+/** Deep-merge override into base (objects merge; arrays and scalars replace). */
+export function deepMerge(
+  base: Record<string, unknown>,
+  override: Record<string, unknown>
+): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(override)) {
+    if (
+      value !== null &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      typeof result[key] === 'object' &&
+      result[key] !== null &&
+      !Array.isArray(result[key])
+    ) {
+      result[key] = deepMerge(
+        result[key] as Record<string, unknown>,
+        value as Record<string, unknown>
+      );
+    } else if (value !== undefined) {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+function readYamlFile(path: string): Record<string, unknown> | undefined {
+  if (!existsSync(path)) return undefined;
+  try {
+    const parsed = yaml.load(readFileSync(path, 'utf-8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+function resolveLogFileSetting(raw: string | boolean | null | undefined): LogFileSetting {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw === 'boolean') return raw ? null : '';
+  const trimmed = String(raw).trim();
+  if (!trimmed || trimmed === '0' || trimmed.toLowerCase() === 'false') return '';
+  return trimmed;
+}
+
+function resolveWorkspaceRoot(raw: RawConfig): string {
+  const fromConfig = raw.workspace_root?.trim();
+  if (fromConfig) return expandHome(fromConfig);
+  return defaultWorkspaceRoot();
+}
+
+/** Load gitignored .env from the install / source tree without overriding existing env. */
+export function loadDotEnvFile(envPath = resolve(getProjectRoot(), '.env')): void {
+  if (!existsSync(envPath)) return;
+  const text = readFileSync(envPath, 'utf-8');
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq <= 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    let value = trimmed.slice(eq + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    if (process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+}
+
+export function applyEnvOverrides(config: AppConfig): AppConfig {
+  const apiKey = process.env.CURSOR_API_KEY?.trim();
+  const botToken = process.env.TELEGRAM_BOT_TOKEN?.trim();
+  const allowedRaw =
+    process.env.TELEGRAM_ALLOWED_USER_IDS ?? process.env.TELEGRAM_ALLOWED_USER_ID;
+  const uiToken = process.env.CURSOR_CP_UI_TOKEN?.trim();
+  const tunnelToken = process.env.CLOUDFLARE_TUNNEL_TOKEN?.trim();
+  const tunnelHostname = process.env.CLOUDFLARE_TUNNEL_HOSTNAME?.trim();
+  const wolMac = process.env.WOL_MAC?.trim();
+
+  if (apiKey) {
+    config.cursorApiKey = apiKey;
+  }
+  if (botToken) {
+    config.channels.telegram.botToken = botToken;
+    config.channels.telegram.enabled = true;
+  }
+  if (allowedRaw?.trim()) {
+    config.channels.telegram.allowedUserIds = parseAllowedUserIds(
+      allowedRaw.split(/[\s,]+/)
+    );
+  }
+  if (uiToken) {
+    config.server.uiToken = uiToken;
+  }
+  if (tunnelToken) {
+    config.server.tunnelToken = tunnelToken;
+  }
+  if (tunnelHostname) {
+    config.server.tunnelHostname = tunnelHostname;
+  }
+  if (wolMac) {
+    config.machine = { ...config.machine, wolMac };
+  }
+  return config;
+}
+
+function rawToAppConfig(raw: RawConfig): AppConfig {
+  return {
+    cursorApiKey: raw.cursor.api_key.trim(),
+    repos: raw.repos,
+    workspaceRoot: resolveWorkspaceRoot(raw),
+    channels: {
+      telegram: {
+        enabled: raw.channels.telegram.enabled,
+        botToken: raw.channels.telegram.bot_token.trim(),
+        allowedUserIds: parseAllowedUserIds(raw.channels.telegram.allowed_user_ids),
+      },
+      web: { enabled: raw.channels.web.enabled },
+    },
+    server: {
+      host: raw.server.host,
+      port: raw.server.port,
+      uiToken: raw.server.ui_token.trim(),
+      tunnelToken: raw.server.tunnel_token.trim(),
+      tunnelHostname: raw.server.tunnel_hostname.trim(),
+    },
+    sdk: {
+      defaultModel: raw.sdk.default_model,
+      maxSessions: raw.sdk.max_sessions,
+      questionTimeoutMs: raw.sdk.question_timeout_ms,
+    },
+    logging: {
+      level: raw.logging.level,
+      file: resolveLogFileSetting(raw.logging.file),
+    },
+    machine: {
+      telegramHeartbeatHours: raw.machine.telegram_heartbeat_hours,
+      wolMac: raw.machine.wol_mac.trim(),
+    },
+  };
+}
+
+/** Load and merge config from explicit paths (used by tests). */
+export function loadConfigFromPaths(
+  defaultPath: string,
+  overridePaths: string[] = []
+): { config: AppConfig; defaultPath: string; overridePaths: string[] } {
+  let merged: Record<string, unknown> = readYamlFile(defaultPath) ?? {};
+
+  const appliedOverrides: string[] = [];
+  for (const path of overridePaths) {
+    const layer = readYamlFile(path);
+    if (layer) {
+      merged = deepMerge(merged, layer);
+      appliedOverrides.push(path);
+    }
+  }
+
+  const config = rawToAppConfig(RawConfigSchema.parse(merged));
+  cachedConfig = config;
+
+  return { config, defaultPath, overridePaths: appliedOverrides };
+}
+
+function collectOverridePaths(): string[] {
+  const paths: string[] = [];
+  const home = userConfigPath();
+  const project = projectConfigPath();
+  if (existsSync(home)) paths.push(home);
+  if (project !== home && existsSync(project)) paths.push(project);
+  return paths;
+}
+
+export function loadConfig(): {
+  config: AppConfig;
+  defaultPath: string;
+  overridePaths: string[];
+} {
+  loadDotEnvFile();
+  const defaultPath = configDefaultPath();
+  const loaded = loadConfigFromPaths(defaultPath, collectOverridePaths());
+  applyEnvOverrides(loaded.config);
+  return loaded;
+}
+
+/** Create config.yaml from config.default.yaml when missing. */
+export function ensureUserConfig(targetPath = userConfigPath()): string {
+  if (existsSync(targetPath)) {
+    return targetPath;
+  }
+
+  const defaults = configDefaultPath();
+  if (!existsSync(defaults)) {
+    throw new Error(`Missing defaults file: ${defaults}`);
+  }
+
+  mkdirSync(projectHomeDir(), { recursive: true });
+  copyFileSync(defaults, targetPath);
+  try {
+    chmodSync(targetPath, 0o600);
+  } catch {
+    // Best-effort on Windows.
+  }
+  return targetPath;
+}
+
+/** Create project-root config.yaml for local development. */
+export function ensureProjectConfig(): string {
+  return ensureUserConfig(projectConfigPath());
+}
+
+export function requireCursorApiKey(config: AppConfig): string {
+  const apiKey = config.cursorApiKey.trim();
+  if (!apiKey || apiKey.startsWith('your_')) {
+    console.error('Error: cursor.api_key is required.');
+    console.error('');
+    console.error('Run the setup wizard:');
+    console.error('  cursor-cp setup');
+    console.error('');
+    console.error(`Or set cursor.api_key in ${userConfigPath()}`);
+    console.error('Get a key from: https://cursor.com/dashboard/cloud-agents');
+    process.exit(1);
+  }
+  return apiKey;
+}

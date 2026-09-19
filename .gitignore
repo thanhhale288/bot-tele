@@ -1,0 +1,13 @@
+# Secrets and local overrides — never commit
+.env
+.env.*
+!.env.example
+cursor-cp/config.yaml
+cursor-cp/node_modules/
+cursor-cp/dist/
+cursor-cp/data/
+cursor-cp/*.db
+cursor-cp/*.log
+state/
+logs/
+bin/cloudflared

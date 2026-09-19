@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+
+      - name: Build release notes
+        run: |
+          TAG="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)
+          if [ -z "$PREVIOUS_TAG" ]; then
+            git log --pretty=format:"- %s" > CHANGELOG.txt
+          else
+            git log --pretty=format:"- %s" "${PREVIOUS_TAG}..HEAD" > CHANGELOG.txt
+          fi
+
+          {
+            echo "## Changes"
+            echo ""
+            cat CHANGELOG.txt
+            echo ""
+            echo "## Installation"
+            echo '```bash'
+            echo "curl -fsSL https://raw.githubusercontent.com/sanjaysingh/cursor-cp/main/install.sh | bash -s -- --version ${TAG}"
+            echo '```'
+          } > RELEASE_NOTES.md
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          name: Release ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          body_path: RELEASE_NOTES.md

@@ -1,0 +1,49 @@
+# Cursor Control Plane — default configuration
+#
+# Copy config.default.yaml to config.yaml and edit your overrides there.
+# config.yaml is not committed (see .gitignore).
+#
+# After editing: cursor-cp daemon restart  (or cursor-cp for foreground)
+#
+# Get a Cursor API key: https://cursor.com/dashboard/cloud-agents
+
+cursor:
+  api_key: ""
+
+server:
+  host: 0.0.0.0
+  port: 8747
+  # Empty = generate an ephemeral token at startup. Required when opening /ui remotely.
+  ui_token: ""
+  # Named Cloudflare tunnel (stable URL). Empty = trycloudflare.com quick tunnel.
+  tunnel_token: ""
+  tunnel_hostname: ""
+
+sdk:
+  default_model: "composer-2.5"
+  max_sessions: 5
+  question_timeout_ms: 3600000
+
+machine:
+  telegram_heartbeat_hours: 0
+  wol_mac: ""
+
+channels:
+  telegram:
+    enabled: false
+    bot_token: ""
+    allowed_user_ids: []
+  web:
+    enabled: true
+
+logging:
+  level: info
+  # file: false               # omit = daily logs under ~/cursor-cp/logs
+
+repos: []
+# workspace_root: ~/cursor-cp/ws-root
+
+# Secrets can also be supplied via cursor-cp/.env (see repo .env.example):
+#   CURSOR_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USER_ID
+# Telegram /ui starts a Cloudflare tunnel to this dashboard (token required remotely).
+# Named tunnel: set server.tunnel_token + server.tunnel_hostname (or CLOUDFLARE_TUNNEL_* env).
