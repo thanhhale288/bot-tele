@@ -26,6 +26,7 @@ describe('telegram commands', () => {
       'lint',
       'dev',
       'preview',
+      'runcode',
       'shot',
       'logs',
       'rules',
@@ -49,6 +50,7 @@ describe('telegram commands', () => {
     expect(help).toContain('/commit');
     expect(help).toContain('/test');
     expect(help).toContain('/preview');
+    expect(help).toContain('/runcode');
     expect(help).toContain('photo');
     expect(help).toContain('voice');
     expect(help).toContain('@path/to/file');
