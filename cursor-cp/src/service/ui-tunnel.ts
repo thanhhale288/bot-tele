@@ -12,6 +12,7 @@ import { getProjectRoot } from '../config/home.js';
 
 const URL_RE = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i;
 const NAMED_READY_RE = /registered tunnel connection|connection registered|tunnel connection/i;
+const QUICK_READY_RE = /registered tunnel connection/i;
 
 export interface UiTunnelOptions {
   namedToken?: string;
@@ -201,13 +202,17 @@ export class UiTunnel {
     return new Promise((resolve, reject) => {
       this.killChild();
 
-      const child = spawn(resolveCloudflaredBin(), ['tunnel', '--url', this.localUrl, '--no-autoupdate'], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
+      // Prefer HTTP/2: many home networks block QUIC/UDP :7844.
+      const child = spawn(
+        resolveCloudflaredBin(),
+        ['tunnel', '--url', this.localUrl, '--protocol', 'http2', '--no-autoupdate'],
+        { stdio: ['ignore', 'pipe', 'pipe'] }
+      );
       this.child = child;
 
       let settled = false;
       let buffer = '';
+      let seenUrl: string | null = null;
 
       const finishOk = (url: string) => {
         if (settled) return;
@@ -231,7 +236,11 @@ export class UiTunnel {
         buffer += text;
         logger.debug({ text: text.trim() }, 'cloudflared output');
         const url = extractTunnelUrl(buffer);
-        if (url) finishOk(url);
+        if (url) seenUrl = url;
+        // URL banner alone is too early — wait until the edge connection registers.
+        if (seenUrl && QUICK_READY_RE.test(buffer)) {
+          finishOk(seenUrl);
+        }
       };
 
       child.stdout?.on('data', onChunk);
@@ -257,6 +266,10 @@ export class UiTunnel {
       });
 
       const timer = setTimeout(() => {
+        if (seenUrl && this.child === child) {
+          finishOk(seenUrl);
+          return;
+        }
         finishErr(new Error('Timed out waiting for Cloudflare tunnel URL'));
       }, timeoutMs);
     });

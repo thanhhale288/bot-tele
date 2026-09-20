@@ -35,6 +35,7 @@ export function listTelegramBotCommands(): BotCommandSpec[] {
     { command: 'lint', description: 'Run lint / typecheck' },
     { command: 'dev', description: 'Start or stop the dev server' },
     { command: 'preview', description: 'Tunnel the running app' },
+    { command: 'runcode', description: 'Auto-run app + Cloudflare link' },
     { command: 'shot', description: 'Screenshot a page' },
     { command: 'logs', description: 'Show the last command log' },
     { command: 'rules', description: 'Show workspace rules' },
@@ -61,6 +62,7 @@ export function telegramStartHelp(): string {
     '/status /log /branch — Git status, log, switch branch\n' +
     '/commit /push /pr — Commit, push, open a PR (asks first)\n' +
     '/test /lint — Run project scripts\n' +
+    '/runcode — Auto-run project, pick port, Cloudflare link\n' +
     '/dev /preview /shot /logs — Dev server, app tunnel, screenshot\n' +
     '/ask /agent /plan — Session mode (ask/plan cannot write files)\n' +
     '/rules — Workspace rules · /rules extra <text>\n' +

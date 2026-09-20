@@ -122,12 +122,15 @@ import {
   lintScriptCandidates,
   parseDevArg,
   parsePreviewArg,
+  parseRunCodeArg,
   readPackageScripts,
+  runCodeAndPreview,
   runNpmScript,
   startAppPreview,
   startDevServer,
   stopAppPreview,
   stopDevServer,
+  stopRunCode,
   testScriptCandidates,
 } from '../core/workspace-run.js';
 import {
@@ -523,6 +526,9 @@ export class TelegramChannel implements Channel {
     });
     this.bot.command('preview', async (ctx) => {
       await this.handlePreview(ctx, telegramCommandArg(ctx, 'preview'));
+    });
+    this.bot.command('runcode', async (ctx) => {
+      await this.handleRunCode(ctx, telegramCommandArg(ctx, 'runcode'));
     });
     this.bot.command('shot', async (ctx) => {
       await this.handleShot(ctx, telegramCommandArg(ctx, 'shot'));
@@ -1830,6 +1836,33 @@ export class TelegramChannel implements Channel {
     await ctx.reply(`Opening app preview on port ${port}…`);
     const preview = await startAppPreview(current.session.id, port);
     await ctx.reply(preview.message);
+  }
+
+  private async handleRunCode(ctx: Context<Update>, arg: string): Promise<void> {
+    const current = await this.requireCurrentWorkspace(ctx);
+    if (!current) return;
+
+    const parsed = parseRunCodeArg(arg);
+    if (parsed.stop) {
+      const stopped = await stopRunCode(current.session.id);
+      await ctx.reply(stopped.message);
+      return;
+    }
+
+    if (arg && parsed.port === undefined && arg !== 'start') {
+      await ctx.reply('Usage: /runcode [port]\nExample: /runcode · /runcode 8000 · /runcode stop');
+      return;
+    }
+
+    await ctx.reply(
+      parsed.port
+        ? `Running project and opening Cloudflare on :${parsed.port}…`
+        : 'Detecting how to run this project, starting it, then opening Cloudflare…'
+    );
+    const result = await runCodeAndPreview(current.repoPath, current.session.id, {
+      port: parsed.port,
+    });
+    await ctx.reply(result.message);
   }
 
   private async handleShot(ctx: Context<Update>, arg: string): Promise<void> {
